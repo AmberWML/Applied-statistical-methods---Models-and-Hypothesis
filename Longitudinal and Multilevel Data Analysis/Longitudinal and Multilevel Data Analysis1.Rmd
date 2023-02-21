@@ -1,0 +1,267 @@
+---
+title: "Untitled"
+author: "Jiasheng Chen"
+date: "2/4/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+chole = read.table('~/downloads/cholesterol-data.txt',header = F)
+colnames(chole) = c('Group','ID_number','Y0','Y6','Y12','Y20','Y24')
+chole
+chole$`Y12` = as.character(chole$`Y12`)
+chole$`Y20` = as.character(chole$`Y20`)
+chole$`Y24` = as.character(chole$`Y24`)
+
+chole$`Y12` = as.numeric(chole$`Y12`)
+chole$`Y20` = as.numeric(chole$`Y20`)
+chole$`Y24` = as.numeric(chole$`Y24`)
+
+```
+
+```{r}
+#Constuct the data frame
+data = data.frame(
+  group = factor(rep(ifelse(chole$Group==1,"high","placebo"),5)),
+  months = factor(c(rep(0,103),rep(6,103),rep(12,103),rep(20,103),rep(24,103))),
+  chole_level = c(chole$Y0,chole$Y6,chole$Y12,chole$Y20,chole$Y24),
+  id = c(rep(chole$ID_number,5))
+)
+data$time = c(rep(1,103),rep(2,103),rep(3,103),rep(4,103),rep(5,103))
+data$chole_level = ifelse(data$chole_level==1,NA,data$chole_level)
+data = na.omit(data) 
+
+#data with months and group as numeric var.
+new_chole_group = ifelse(chole$Group==1,1,0)
+data2 = data.frame(
+  group = rep(new_chole_group,5),
+  months = c(rep(0,103),rep(6,103),rep(12,103),rep(20,103),rep(24,103)),
+  chole_level = c(chole$Y0,chole$Y6,chole$Y12,chole$Y20,chole$Y24),
+  id = c(rep(chole$ID_number,5))
+)
+data2$time = c(rep(1,103),rep(2,103),rep(3,103),rep(4,103),rep(5,103))
+data2$chole_level = ifelse(data2$chole_level==1,NA,data2$chole_level)
+data2 = na.omit(data2) 
+
+library(nlme)
+
+```
+
+```{r}
+#1.1
+library(ggplot2)
+p <- ggplot(data=data, aes(y=chole_level, x=months, fill=group))
+p + geom_boxplot() + 
+  labs(title="Distribution of chole_level over time by group", 
+       x="Months", fill="Treatment Group")
+
+#report estimated variances by treatment Group.
+sapply(chole[1:62,], FUN = var, na.rm = T)[3:7] #Placebo
+sapply(chole[63:103,], FUN = var, na.rm = T)[3:7] #High-dose
+
+
+```
+```{r}
+#1.2
+#Calculate the means
+ave_group1 = c()
+for (i in 1:5){
+    ave_group1[i] = mean(chole[,i+2][chole$Group==1],na.rm=T)
+}
+
+ave_group2 = c()
+for (i in 1:5){
+  ave_group2[i] = mean(chole[,i+2][chole$Group==2],na.rm=T)
+}
+
+#group means plots
+plot(levels(data$months),ave_group1,type="p",col="black",xlab='months',ylab='average choleterol')
+lines(levels(data$months),ave_group1,col="green")
+points(levels(data$months),ave_group2,col="black")
+lines(levels(data$months),ave_group2,col="blue",lty=2)
+
+
+
+```
+```{r}
+#2.4
+#Regression and hyphothesis testing
+m1 <- gls(chole_level ~ months*group, data=data, 
+          corr=corSymm(form= ~ time | id), #Covariance structure: symmetrical
+          weights=varIdent(form= ~ 1 | months), na.action = na.omit) #varIdent allows for different variances at each time point
+
+summary(m1)
+#LRT for treatment by time interaction
+m1.1 <- gls(chole_level ~ months*group, data=data,  method="ML",
+          corr=corSymm(form= ~ time | id),
+          weights=varIdent(form= ~ 1 | months))
+m1.2 <- gls(chole_level ~ months, data=data,  method="ML",
+          corr=corSymm(form= ~ time | id),
+          weights=varIdent(form= ~ 1 | months))
+anova(m1.1,m1.2)
+#Choose m1.2 based on anova result.
+
+#Var/Cor matrix
+#define function for Var/Cor matrix
+corandcov <- function(glsob,cov=T,...){
+  corm <- corMatrix(glsob$modelStruct$corStruct)[[5]]
+  print(corm)
+  varstruct <- print(glsob$modelStruct$varStruct)  
+  varests <- coef(varstruct, uncons=F, allCoef=T)
+  covm <- corm*glsob$sigma^2*t(t(varests))%*%t(varests)
+  return(covm)}
+#Call on the functioon 'corandcov' for model 'm1'
+corandcov(m1)
+
+#Calculate estimated mean for the pairs.
+newdata2 = data.frame(months="12", group="placebo" )
+predict(m1.2, newdata2, type="response")
+
+newdata2 = data.frame(months="20", group="high" )
+predict(m1.2, newdata2, type="response")
+
+#plot the observed.
+chole_level2 = aggregate(data$chole_level, list(data$group, data$months), mean)
+chole_level2$group <- "Observed"
+colnames(chole_level2) = c("ctrt","cweek_num","fit","group")
+lsmeans.m1 <- unique(data.frame(ctrt=data$group,cweek_num=data$months,fit=m1$fitted))
+
+lsmeans.m1$group <- "Predicted"
+p.meanpro <- rbind(lsmeans.m1,chole_level2)
+p1.b <- ggplot(p.meanpro, aes(x=cweek_num,y=fit,color=ctrt,linetype=group,group=interaction(ctrt,group)))
+p1.b + geom_line() + geom_point() +
+  labs(title="Predicted and Observed Mean Trajectories of chole
+       _level by Treatment Group: Mean Response Profile, m1",
+       x="Months number", y="Chole_level", color="Treatment Group", linetype="Predicted/Observed") +
+  scale_linetype_manual(values=c("dashed","solid"), labels=c("Observed","Predicted"))
+
+
+
+```
+```{r}
+#3.4
+m5 <- gls(chole_level ~ months*group, data=data2, 
+          corr=corSymm(form= ~ time | id), #Covariance structure: symmetrical
+          weights=varIdent(form= ~ 1 | months), na.action = na.omit) #varIdent allows for different variances at each time point
+
+summary(m5)
+
+#Call on the functioon 'corandcov' for model 'm5'
+corandcov(m5)
+
+#LRT for treatment by time interaction
+m5.1 <- gls(chole_level ~ months*group, data=data2,  method="ML",
+          corr=corSymm(form= ~ time | id),
+          weights=varIdent(form= ~ 1 | months))
+m5.2 <- gls(chole_level ~ months, data=data2,  method="ML",
+          corr=corSymm(form= ~ time | id),
+          weights=varIdent(form= ~ 1 | months))
+anova(m5.1,m5.2)
+#Should include interaction terms, so m5.2 is better.
+
+#Calculate estimated mean for two settings.
+newdata1 = data.frame(months=12, group=0 )
+predict(m5.2, newdata1, type="response")
+
+newdata2 = data.frame(months=20, group=1 )
+predict(m5.2, newdata2, type="response")
+
+#plot the observed and the estimated.
+chole_level3 = aggregate(data2$chole_level, list(data2$group, data2$months), mean)
+chole_level3$group <- "Observed"
+colnames(chole_level3) = c("ctrt","cweek_num","fit","group")
+lsmeans.m5 <- unique(data.frame(ctrt=data2$group,cweek_num=data2$months,fit=m5$fitted))
+
+lsmeans.m5$group <- "Predicted"
+p.meanpro <- rbind(lsmeans.m5,chole_level3)
+p1.b <- ggplot(p.meanpro, aes(x=cweek_num,y=fit,color=ctrt,linetype=group,group=interaction(ctrt,group)))
+p1.b + geom_line() + geom_point() +
+  labs(title="Predicted and Observed Mean Trajectories of chole
+       _level by Treatment Group: Mean Response Profile, m5",
+       x="Months number", y="Chole_level", color="Treatment Group", linetype="Predicted/Observed") +
+  scale_linetype_manual(values=c("dashed","solid"), labels=c("Observed","Predicted"))
+```
+```{r}
+#4
+#Create a spline variable
+data2$months_12 <- (data2$months-12)*I(data2$months>=12)
+
+#Run model
+m7 <- gls(chole_level ~ months*group+months_12*group, data=data2, 
+          corr=corSymm(form= ~ time | id),
+          weights=varIdent(form= ~ 1 | months),na.action = na.omit)
+
+summary(m7)
+
+#Call on the functioon 'corandcov' for model 'm7'
+corandcov(m7)
+
+
+#LRT for treatment by time interaction
+m7.1 <- gls(chole_level ~ months*group+months_12*group, data=data2, 
+          corr=corSymm(form= ~ time | id),
+          weights=varIdent(form= ~ 1 | months), method='ML')
+m7.2 <- gls(chole_level ~ months+months_12, data=data2, 
+           corr=corSymm(form= ~ time | id),
+           weights=varIdent(form= ~ 1 | months), method='ML')
+anova(m7.1, m7.2)
+#Should include interaction terms, so m7.1 is better.
+
+#Calculate estimated mean for two settings.
+newdata1 = data.frame(months=12, group=0,months_12=0 )
+predict(m7.1, newdata1, type="response")
+
+newdata2 = data.frame(months=20, group=1,months_12=8 )
+predict(m7.1, newdata2, type="response")
+
+#plot the observed and the estimated.
+chole_level4 = aggregate(data2$chole_level, list(data2$group, data2$months), mean)
+chole_level4$group <- "Observed"
+colnames(chole_level4) = c("ctrt","cweek_num","fit","group")
+lsmeans.m7 <- unique(data.frame(ctrt=data2$group,cweek_num=data2$months,fit=m7$fitted))
+
+lsmeans.m7$group <- "Predicted"
+p.meanpro <- rbind(lsmeans.m7,chole_level4)
+p1.b <- ggplot(p.meanpro, aes(x=cweek_num,y=fit,color=ctrt,linetype=group,group=interaction(ctrt,group)))
+p1.b + geom_line() + geom_point() +
+  labs(title="Predicted and Observed Mean Trajectories of chole
+       _level by Treatment Group: Mean Response Profile, m7",
+       x="Months number", y="Chole_level", color="Treatment Group", linetype="Predicted/Observed") +
+  scale_linetype_manual(values=c("dashed","solid"), labels=c("Observed","Predicted"))
+```
+
+```{r}
+#5
+#quadratic trend model
+data2$num_month = data2$months-mean(data2$months)
+data2$num_month2 = (data2$num_month)^2
+
+
+### Fit a quadratic trend model
+m6 <- gls(chole_level ~ group*num_month+group*num_month2, data=data2, method = "ML",
+          corr=corSymm(form= ~ time | id),
+          weights=varIdent(form= ~ 1 | months))
+summary(m6)
+
+
+#hypothesis test
+anova(m1.1,m5.1)
+anova(m1.1,m7.1)
+anova(m7.1,m6)
+
+print(summary(m1.1)$AIC)
+print(summary(m5.1)$AIC)
+print(summary(m7.1)$AIC)
+print(summary(m6)$AIC)
+
+corandcov(m6)
+corandcov(m1)
+
+```
+
+
